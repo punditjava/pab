@@ -1,0 +1,457 @@
+var choosePartner = function(data, project) {
+    var weight = [];
+    var partner = data[project];
+    for (var i = 0; i < partner.length; i++) {
+        weight.push(partner[i].ratio);
+    }
+
+    var total_weight = weight.reduce(function(prev, cur, i, arr) {
+        return prev + cur;
+    });
+    var random_num = Math.random() * total_weight;
+    var weight_sum = 0;
+
+    for (var i = 0; i < partner.length; i++) {
+        weight_sum += weight[i];
+        weight_sum = +weight_sum.toFixed(2);
+
+        if (random_num <= weight_sum) {
+            return partner[i];
+        }
+    }
+};
+
+function getUUID() {
+    if (!localStorage.getItem('ria_uuid')) {
+        var uuid = '';
+        if ('crypto' in window) {
+            if ('randomUUID' in crypto) {
+                uuid = crypto.randomUUID();
+            } else {
+                uuid = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+                    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+                );
+            }
+        }
+        localStorage.setItem('ria_uuid', uuid);
+    }
+    return localStorage.getItem('ria_uuid');
+}
+
+function getAverageRGB(imgEl) {
+    var blockSize = 5, // only visit every 5 pixels
+        defaultRGB = {r:0, g:0, b:0}, // for non-supporting envs
+        canvas = document.createElement('canvas'),
+        context = canvas.getContext && canvas.getContext('2d'),
+        data, width, height,
+        i = -4,
+        length,
+        rgb = {r:0, g:0, b:0},
+        count = 0;
+
+    if (!context) {
+        return defaultRGB;
+    }
+
+    height = canvas.height = imgEl.naturalHeight || imgEl.offsetHeight || imgEl.height;
+    width = canvas.width = imgEl.naturalWidth || imgEl.offsetWidth || imgEl.width;
+
+    context.drawImage(imgEl, 0, 0);
+
+    try {
+        data = context.getImageData(0, 0, width, height);
+    } catch(e) {
+        /* security error, img on diff domain */
+        return defaultRGB;
+    }
+
+    length = data.data.length;
+
+    while ( (i += blockSize * 4) < length ) {
+        ++count;
+        rgb.r += data.data[i];
+        rgb.g += data.data[i+1];
+        rgb.b += data.data[i+2];
+    }
+
+    // ~~ used to floor values
+    rgb.r = ~~(rgb.r/count);
+    rgb.g = ~~(rgb.g/count);
+    rgb.b = ~~(rgb.b/count);
+
+    return rgb;
+}
+
+function partnersBlockGradient(img) {
+    if (img.src.substring(0, 4) == 'http') {
+        var rgb = getAverageRGB(img);
+        var el = img.parentNode.parentNode;
+        el.style.background = 'rgb(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ')';
+        el.parentNode.querySelector('.banner-article-bottom__item-image-fade').style.background = 'linear-gradient(rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0), rgb(' + rgb.r + ',' + rgb.g + ',' + rgb.b + '))'
+        el.parentNode.querySelector('.banner-article-bottom__item-image-fade').style.borderBottomColor = 'rgb(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ')';
+    }
+}
+
+function partnersBlockItemObserver(el, widget_id) {
+    if ('IntersectionObserver' in window && 'IntersectionObserverEntry' in window) {
+        var partnersObserver = new IntersectionObserver(function(entries, observer) {
+            entries.forEach(function(entry) {
+                if (entry.isIntersecting) {
+                    var partner_item = entry.target;
+                    fetch('https://data.24smi.net/collect?obj='+widget_id+'&teaser_ids='+partner_item.dataset.id);
+                    partnersObserver.unobserve(partner_item);
+                }
+            });
+        }, {
+            threshold: 0.5
+        });
+        partnersObserver.observe(el);
+    }
+}
+
+function partnersBlockObserver(el, title, vendor) {
+    if ('IntersectionObserver' in window && 'IntersectionObserverEntry' in window) {
+        var partnersObserver = new IntersectionObserver(function(entries, observer) {
+            entries.forEach(function(entry) {
+                if (entry.isIntersecting) {
+                    var partner_container = entry.target;
+
+                    var position = '';
+                    var item_class = '';
+                    var cls = partner_container.classList;
+                    switch (true) {
+                        case cls.contains('js-test-partner-1'):
+                            position = '(справа)';
+                            item_class = '.banner-sidebar-list-item';
+                            break;
+                        case cls.contains('js-test-partner-2'):
+                            position = '(снизу)';
+                            item_class = '.banner-article-bottom__item';
+                            break;
+                        case cls.contains('js-partner-3'):
+                            position = '(antiZen)';
+                            item_class = '.banner-article-bottom__item';
+                            break;
+                    }
+                    dataLayer.push({
+                        'event':'partners_block',
+                        'gaEventCategory':'Партнёры ' + position,
+                        'gaEventAction':'Доскроллы',
+                        'gaEventLabel': title
+                    });
+
+                    var links = partner_container.querySelectorAll('a');
+                    for (var i = 0; i < links.length; i++) {
+                        links[i].addEventListener('click', function(e) {
+                            dataLayer.push({
+                                'event':'partners_block',
+                                'gaEventCategory':'Партнёры ' + position,
+                                'gaEventAction':'Клики',
+                                'gaEventLabel': title
+                            });
+                        });
+                    }
+
+                    if (vendor == '24smi') {
+                        var widget_id = partner_container.children[0].dataset.id
+                        var items = partner_container.querySelectorAll(item_class);
+                        for (var i = 0; i < items.length; i++) {
+                            partnersBlockItemObserver(items[i], widget_id);
+                        }
+                    }
+
+                    partnersObserver.unobserve(partner_container);
+                }
+            });
+        });
+        partnersObserver.observe(el);
+    }
+}
+
+/* delete after ab-test #RIA2018-4295 */
+function partnersBlockObserverAB(el, i) {
+    var variant = 'a';
+    if (el.dataset && el.dataset.abCode) {
+        variant = el.dataset.abCode;
+    }
+    if ('IntersectionObserver' in window && 'IntersectionObserverEntry' in window) {
+        var partnersObserver = new IntersectionObserver(function(entries, observer) {
+            entries.forEach(function(entry) {
+                if (entry.isIntersecting) {
+                    var partner_container = entry.target;
+
+                    var partner_name = '';
+                    switch (true) {
+                        case partner_container.querySelectorAll('.banner__content > div')[0].textContent.includes('СМИ2'):
+                            partner_name = 'smi2_';
+                            break;
+                        case partner_container.querySelectorAll('.banner__content > div')[0].textContent.includes('INFOX') || partner_container.querySelectorAll('.banner__content > div')[0].textContent.includes('infox'):
+                            partner_name = 'infox_';
+                            break;
+                        case partner_container.querySelectorAll('.banner__content > div')[0].textContent.includes('24СМИ') || partner_container.querySelector('.smi24__informer') != null:
+                            partner_name = '24smi_';
+                            break;
+                    }
+
+                    dataLayer.push({
+                        'event':'block_ab_partners',
+                        'eventCategory':'Partners_ab_' + i,
+                        'eventAction':'Scroll',
+                        'eventLabel': partner_name + variant
+                    });
+
+                    partner_container.addEventListener('click', function(e) {
+                        if (e.target && (e.target.closest('a') != null || e.target.closest('.smi24__informer'))) {
+                            dataLayer.push({
+                                'event':'block_ab_partners',
+                                'eventCategory':'Partners_ab_' + i,
+                                'eventAction':'Click',
+                                'eventLabel': partner_name + variant
+                            });
+                        }
+                    });
+
+                    partnersObserver.unobserve(partner_container);
+                }
+            });
+        });
+        partnersObserver.observe(el);
+    }
+}
+function bannersAB(selector, i) {
+    var articles = document.querySelectorAll('.endless__item');
+    var article = articles[articles.length - 1];
+    var project = GLOBAL.project;
+    if (article.dataset && article.dataset.project) {
+        project = article.dataset.project;
+    }
+    if (project == 'ria' || project == 'rsport' || project == 'radiosputnik') {
+        var banners = article.querySelectorAll(selector);
+        var banner = banners[0];
+        if (typeof banner !== "undefined") {
+            partnersBlockObserverAB(banner, i);
+        }
+    }
+}
+/* / delete after ab-test */
+
+function loadPartnersBlock(data, container) {
+    var articles = document.querySelectorAll('.endless__item');
+    var article = articles[articles.length - 1];
+    var project = GLOBAL.project;
+    if (article.dataset && article.dataset.project) {
+        project = article.dataset.project;
+    }
+    var pagetags = GLOBAL.partnerstags.split(':');
+    if (article.dataset && article.dataset.adfoxRubric) {
+        pagetags = article.dataset.adfoxRubric.split(':');
+    }
+    if ((typeof data[project] === "undefined" || !data[project].length)) {
+        return;
+    }
+    var tags = data["exclude"];
+    for (var i = 0; i < tags.length; i++) {
+        if (pagetags.indexOf(tags[i]) !== -1) {
+            return;
+        }
+    }
+
+    var container1 = article.querySelectorAll('.js-test-partner-1')[0];
+    var containers2 = article.querySelectorAll(container);
+    var container2 = containers2[0];
+    if (containers2.length) {
+        for (var i = 0; i < containers2.length; i++) {
+            if (containers2[i].offsetParent) {
+                container2 = containers2[i];
+            }
+        }
+    }
+
+    if ((container == '.js-partner-3' && (typeof container2 === "undefined" || container2.childNodes.length)) ||
+        ((typeof container1 === "undefined" || container1.childNodes.length) && (typeof container2 === "undefined" || container2.childNodes.length))) {
+        return;
+    }
+
+    var random_item = choosePartner(data, project);
+
+    var className = 'm-active';
+    var url = random_item.url;
+    var vendor = random_item.name.toLowerCase();
+    var vendor_title = random_item.title;
+    var widget_id = (url.split('id=')[1]||'').split('&')[0];
+
+    if (vendor == '24smi') {
+        widget_id = (url.split('object=')[1]||'').split('&')[0];
+        url += '&chash=' + getUUID();
+    }
+    // if (vendor == 'smi2') {
+    //     widget_id = (url.split('/js/')[1]||'').split('.js')[0];
+    // }
+
+    var request = new XMLHttpRequest();
+    request.open('GET', url, true);
+    if (vendor == 'infox') {
+        request.withCredentials = true;
+    }
+
+    if (typeof container1 !== "undefined" && GLOBAL.css.banners_sidebar != '') {
+        // container1.insertAdjacentHTML('beforebegin', '<link rel="stylesheet" href="' + GLOBAL.css.banners_sidebar + '" />');
+        // inline css from htdocs/css/banners/sidebar.min.css (htdocs/sass/banners/sidebar.scss)
+        container1.insertAdjacentHTML('beforebegin', '<style>.banner-sidebar{box-sizing:border-box;margin-bottom:5px;padding:10px;background:#fff}.banner-sidebar-header{font-family:"Montserrat", Arial, sans-serif;font-size:15px;line-height:15px;font-weight:bold;color:#000;margin-bottom:10px;position:relative;padding-right:38px;text-align:left}.banner-sidebar-header-after{display:inline-block;font-family:"Montserrat", Arial, sans-serif;font-size:11px;line-height:15px;font-weight:bold;color:#767676;position:absolute;top:2px;right:0}.banner-sidebar-list{font-size:0;user-select:none}.banner-sidebar-list-item{display:inline-block;vertical-align:top;width:100%;box-sizing:border-box;margin-bottom:15px;position:relative;user-select:none}.banner-sidebar-list-item:last-child{margin-bottom:0}.banner-sidebar-list-item-img{display:block;float:left;margin-right:10px;width:80px;height:80px;border-radius:3px;overflow:hidden}.banner-sidebar-list-item-img img{width:100%;height:100%;-o-object-fit:cover;object-fit:cover}.banner-sidebar-list-item-title a{display:block;overflow:hidden;padding-top:5px;max-height:76px;border-top:1px solid #efecec;font-family:"NotoSans", Arial, sans-serif;font-size:14px;line-height:18px;font-weight:bold;color:#333;text-align:left;text-decoration:none;word-wrap:break-word;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical}.banner-sidebar-list-item:first-child .banner-sidebar-list-item-img{width:100%;height:158px;float:none}.banner-sidebar-list-item:first-child .banner-sidebar-list-item-img:after{content:"";background:-webkit-gradient(linear, left bottom, left top, from(#000), to(rgba(0,0,0,0)));background:-webkit-linear-gradient(bottom, #000, rgba(0,0,0,0));background:-moz-linear-gradient(bottom, #000, rgba(0,0,0,0));background:linear-gradient(0deg, #000, rgba(0,0,0,0));position:absolute;top:0;left:0;right:0;bottom:0;border-radius:3px}.banner-sidebar-list-item:first-child .banner-sidebar-list-item-title{position:absolute;left:15px;right:15px;bottom:15px}.banner-sidebar-list-item:first-child .banner-sidebar-list-item-title a{color:#fff;border:0;padding:0;font-size:16px;line-height:20px}</style>');
+        GLOBAL.css.banners_sidebar = '';
+    }
+    if (typeof container2 !== "undefined" && GLOBAL.css.banners_article_bottom != '') {
+        // container2.insertAdjacentHTML('beforebegin', '<link rel="stylesheet" href="' + GLOBAL.css.banners_article_bottom + '" />');
+        // inline css from htdocs/css/banners/article_bottom.min.css (htdocs/sass/banners/article_bottom.scss)
+        container2.insertAdjacentHTML('beforebegin', '<style>.banner-article-bottom{position:relative;padding:20px 0 0}@media only screen and (min-width: 480px){.banner-article-bottom{padding:30px 0 0}}@media only screen and (min-width: 1160px){.banner-article-bottom{padding:35px 0 0}}.banner-article-bottom__title{position:relative;margin-bottom:10px;font-size:18px;line-height:22px;font-weight:700}@media only screen and (min-width: 480px){.banner-article-bottom__title{font-size:24px;line-height:30px}}.banner-article-bottom__title-after{position:absolute;top:8px;right:0;display:inline-block;font-size:11px;line-height:13px;font-weight:bold;color:#767676}.banner-article-bottom__set{position:relative;height:235px;margin:0 -10px;white-space:nowrap;overflow:hidden}@media only screen and (min-width: 480px){.banner-article-bottom__set{margin:0 -20px}}@media only screen and (min-width: 640px){.banner-article-bottom__set{margin:0}}.banner-article-bottom__item{position:relative;display:inline-block;vertical-align:top;width:175px;height:235px;margin-right:15px;border-radius:3px;overflow:hidden;white-space:normal;background:#222}.banner-article-bottom__item-image{position:absolute;top:-2px;right:-2px;left:-2px;overflow:hidden;border-radius:3px}.banner-article-bottom__item-image img{width:100%}.banner-article-bottom__item-image-fade{position:absolute;height:65%;right:-2px;bottom:-2px;left:-2px;border-bottom:3px solid #222222;background-image:-webkit-gradient(linear, left top, left bottom, from(rgba(34,34,34,0)), to(#222));background-image:-webkit-linear-gradient(rgba(34,34,34,0), #222);background-image:-moz-linear-gradient(rgba(34,34,34,0), #222);background-image:linear-gradient(rgba(34,34,34,0), #222)}.banner-article-bottom__item-title{position:absolute;left:0;top:0;right:0;bottom:0}.banner-article-bottom__item-title span{position:absolute;right:10px;bottom:30px;left:10px;display:block;color:#fff;font-weight:700;font-size:14px;line-height:17px;text-shadow:0 0 2px rgba(0,0,0,0.5)}.banner-article-bottom__item-title.m-dark span{color:#000;text-shadow:none}.banner-article-bottom__set.the-in-carousel__ready{white-space:normal}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel,.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__stage,.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__pack,.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__item{height:100%}.banner-article-bottom__set.the-in-carousel__ready .banner-article-bottom__item{display:block;margin-right:0}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav{position:absolute;top:50%;margin-top:-71px;padding:0;right:0;width:40px;height:142px;z-index:10}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button{width:40px;height:70px;display:block;border:0;padding:0;margin:0;border-radius:3px 0 0 3px;outline:none;background:none;color:#fff;font-weight:600;background:rgba(0,0,0,0.7);opacity:0.75;text-align:center}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button:not(.m-disabled):hover{background:rgba(0,0,0,0.9)}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button .svg-icon{width:100%;height:100%;fill:#fff;opacity:0.3}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button.m-active .svg-icon{opacity:1}.cell-carousel.m-bg .banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button{background:rgba(255,255,255,0.6)}.cell-carousel.m-bg .banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button .svg-icon{fill:#000}.cell-carousel.m-bg .banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-button:not(.m-disabled):hover{background:rgba(255,255,255,0.9)}.banner-article-bottom__set.the-in-carousel__ready .the-in-carousel__nav-prev{margin-bottom:2px}</style>');
+        GLOBAL.css.banners_article_bottom = '';
+    }
+
+    request.onreadystatechange = function() {
+        if (this.readyState === 4) {
+            if (this.status >= 200 && this.status < 400) {
+                var data = JSON.parse(this.responseText).news;
+
+                if (typeof container1 !== "undefined" && !container1.childNodes.length && container != '.js-partner-3') {
+                    var html = '<div class="banner-sidebar" data-id="' + widget_id + '">' +
+                                '<div class="banner-sidebar-header">Новости партнеров<div class="banner-sidebar-header-after">' + vendor_title + '</div></div>' +
+                                    '<div class="banner-sidebar-list">';
+
+                    for (var i = 0; i < 5; i++) {
+                        html += '<div class="banner-sidebar-list-item" data-id="' + data[i].id + '"><div>' +
+                                '<a href="' + data[i].url + '" target="_blank" class="banner-sidebar-list-item-img" rel="noopener">' +
+                                    '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-src="' + data[i].img + '" class="lazyload" alt="' + data[i].title + ' — партнерский материал" />' +
+                                '</a>' +
+                                '<div class="banner-sidebar-list-item-title">' +
+                                    '<a href="' + data[i].url + '" target="_blank" rel="noopener">' + data[i].title + '</a>' +
+                                '</div>' +
+                            '</div>' +
+                        '</div>';
+
+                        if (vendor == 'infox') {
+                            var img = new Image();
+                            img.async = true;
+                            img.src = data[i].zero_pixel;
+                        }
+                    }
+                    html += '</div></div>';
+
+                    container1.innerHTML = html;
+
+                    partnersBlockObserver(container1, vendor_title, vendor);
+
+                    if (container1.classList) {
+                        container1.classList.add(className);
+                    } else {
+                        container1.className += ' ' + className;
+                    }
+                }
+
+                if (typeof container2 !== "undefined" && !container2.childNodes.length) {
+                    var vis = false;
+                    if (typeof container1 !== "undefined" && container1.offsetParent !== null) {
+                        vis = true;
+                    }
+                    var i = (container == '.js-partner-3' || !vis ? 0 : 5);
+                    var html = '<div class="banner-article-bottom" data-id="' + widget_id + '">'+
+                                    '<div class="banner-article-bottom__title">Новости партнеров <div class="banner-article-bottom__title-after">' + vendor_title + '</div></div>'+
+                                        '<div class="banner-article-bottom__set" data-origin-count="'+ (data.length - i) +'">';
+
+                    for (i; i < data.length; i++) {
+                        var url = (container == '.js-partner-3' ? data[i].url + (data[i].url.indexOf('?') == -1 ? '?' : '&') + 'src_id=antiZen' : data[i].url);
+                        html += '<div class="banner-article-bottom__item" data-position="' + i + '" data-id="' + data[i].id + '">'+
+                                '<div class="banner-article-bottom__item-image">'+
+                                    '<img media-type="ar4x3" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" data-src="' + data[i].img + '" class="lazyload" alt="' + data[i].title + ' — партнерский материал"' + (container == '.js-partner-3' ? ' onload="partnersBlockGradient(this)" crossorigin="" ' : '') + ' />'+
+                                    '<div class="banner-article-bottom__item-image-fade"></div>'+
+                                '</div>'+
+                                '<a class="banner-article-bottom__item-title" target="_blank" href="' + url + '" rel="noopener">'+
+                                    '<span>' + data[i].title + '</span>'+
+                                '</a>'+
+                            '</div>';
+
+                        if (vendor == 'infox') {
+                            var img = new Image();
+                            img.async = true;
+                            img.src = data[i].zero_pixel;
+                        }
+                    }
+                    html += '</div></div>';
+
+                    container2.innerHTML = html;
+
+                    if (container2.classList) {
+                        container2.classList.add(className);
+                    } else {
+                        container2.className += ' ' + className;
+                    }
+
+                    $( container2 ).find(".banner-article-bottom .banner-article-bottom__set").theinCarousel({
+                        navText: [ria.getIcon('icon-left_single'), ria.getIcon('icon-right_single')],
+                        motionType: 'scroll',
+                        itemWidth: 175,
+                        between: 15,
+                        slideBy: 2,
+                        motionTime: 300,
+                        outside: 10,
+                        stretch: false,
+                        responsive: {
+                            480: {
+                                outside: 20
+                            },
+                            640: {
+                                outside: 0
+                            },
+                            925: {
+                                outside: 0,
+                                motionType: 'transform'
+                            }
+                        }
+                    });
+
+                    partnersBlockObserver(container2, vendor_title, vendor);
+                }
+                lazyload();
+            } else {
+                // Error
+            }
+        }
+    };
+
+    request.send();
+    request = null;
+}
+
+if (typeof partners !== "undefined") {
+    loadPartnersBlock(partners, '.js-test-partner-2');
+}
+if (typeof partners2 !== "undefined") {
+    loadPartnersBlock(partners2, '.js-partner-3');
+}
+
+bannersAB('.banner[data-position^="special_mobile_"]', 1);
+bannersAB('.banner[data-position="article_mobile_bottom-2"]', 2);
+
+var partnersPushbannersListener = function(e) {
+    if (typeof partners !== "undefined") {
+        loadPartnersBlock(partners, '.js-test-partner-2');
+    }
+    if (typeof partners2 !== "undefined") {
+        loadPartnersBlock(partners2, '.js-partner-3');
+    }
+
+    bannersAB('.banner[data-position^="special_mobile_"]', 1);
+    bannersAB('.banner[data-position="article_mobile_bottom-2"]', 2);
+
+    document.body.removeEventListener('pushbanners', partnersPushbannersListener, false);
+}
+document.body.addEventListener('nextarticle', function(e) {
+    document.body.addEventListener('pushbanners', partnersPushbannersListener, false);
+}, false);
+
+window.dataLayer = window.dataLayer || [];
+window.partnersjs = true;
+
+// document.addEventListener("DOMContentLoaded", function(e) {
+    // loadPartnersBlock();
+// });
+

@@ -1,0 +1,116 @@
+(function (w, d) {
+	var timers = {};
+	var mediaPlayer;
+
+	function $dispatchMessage(target, message) {
+		target.postMessage({source: "creative", data: message}, "*");
+	}
+
+	w.addEventListener('message', function (event) {
+		var message;
+
+		try { message = JSON.parse(event.data || "{}"); }
+		catch (e) { message = typeof event.data === "object" ? event.data : {}; }
+
+		switch (message.action) {
+			case "handshake":
+				$dispatchMessage(event.source, {action: "handshaked", status: true});
+
+				break;
+
+			case "load":
+				if (!timers["timeout"]) {
+					message.slot = message.data.slot || d.body;
+					message.videoSlot = message.data.videoSlot || d.getElementById("isv-xframe-videoslot");
+
+					var source = event.source;
+					var slot_window = (message.slot.ownerDocument && (message.slot.ownerDocument.defaultView || message.slot.ownerDocument.parentWindow)) || w;
+					var slot_script = message.slot.appendChild(d["createElement"]("script"));
+					slot_script.src = message.data.files[0].src;
+					
+					var totalCount = 0;			
+					timers["timeout"] = setInterval(function () {
+						if (typeof slot_window.getVPAIDAd === "function" && slot_window.hasOwnProperty("getVPAIDAd")) {
+							clearInterval(timers["timeout"]);
+							timers["timeout"] = false;
+
+							try {
+								mediaPlayer = slot_window.getVPAIDAd();
+								mediaPlayer.handshakeVersion("2.0");
+
+								function VPAIDEvent(type, data) {
+									this.type = type;
+									this.data = data;
+								}
+								VPAIDEvent.AdLoaded = "AdLoaded";
+								VPAIDEvent.AdStarted = "AdStarted";
+								VPAIDEvent.AdStopped = "AdStopped";
+								VPAIDEvent.AdSkipped = "AdSkipped";
+								VPAIDEvent.AdLinearChange = "AdLinearChange";
+								VPAIDEvent.AdSizeChange = "AdSizeChange";
+								VPAIDEvent.AdExpandedChange = "AdExpandedChange";
+								VPAIDEvent.AdSkippableStateChange = "AdSkippableStateChange";
+								VPAIDEvent.AdRemainingTimeChange = "AdRemainingTimeChange";
+								VPAIDEvent.AdDurationChange = "AdDurationChange";
+								VPAIDEvent.AdVolumeChange = "AdVolumeChange";
+								VPAIDEvent.AdImpression = "AdImpression";
+								VPAIDEvent.AdVideoStart = "AdVideoStart";
+								VPAIDEvent.AdVideoFirstQuartile = "AdVideoFirstQuartile";
+								VPAIDEvent.AdVideoMidpoint = "AdVideoMidpoint";
+								VPAIDEvent.AdVideoThirdQuartile = "AdVideoThirdQuartile";
+								VPAIDEvent.AdVideoComplete = "AdVideoComplete";
+								VPAIDEvent.AdClickThru = "AdClickThru";
+								VPAIDEvent.AdInteraction = "AdInteraction";
+								VPAIDEvent.AdUserAcceptInvitation = "AdUserAcceptInvitation";
+								VPAIDEvent.AdUserMinimize = "AdUserMinimize";
+								VPAIDEvent.AdUserClose = "AdUserClose";
+								VPAIDEvent.AdPaused = "AdPaused";
+								VPAIDEvent.AdPlaying = "AdPlaying";
+								VPAIDEvent.AdError = "AdError";
+
+								var handler = function(e) {
+									console.log("XFrame Creative: ", e);
+									$dispatchMessage(source, {action: "VPAIDEvent", status: true, event: e});
+									if (e == "AdImpression") {
+										console.log(message.videoSlot);
+									}
+								}
+
+								for (var item in VPAIDEvent) {
+									if(item && VPAIDEvent.hasOwnProperty(item) && typeof VPAIDEvent[item] === "string") {
+										mediaPlayer.subscribe(handler.bind(this, VPAIDEvent[item]), VPAIDEvent[item], this);
+									}
+								}
+
+								Object.defineProperty(document, "referrer", {get : function() { return "https://kinobobr.ru"; }});
+								mediaPlayer.initAd(message.data.size.width, message.data.size.height, "normal", 500, {AdParameters: message.data.parameters}, {slot: message.slot, videoSlot: message.videoSlot});
+							} catch (e) {
+								console.log("VPAID creative internal JS error during initAd");
+							}
+						}
+						else if(totalCount >= 20) {
+							clearInterval(interval);
+							console.log("Function \"getVPAIDAd\" was not found");
+						}
+						totalCount++;
+					}.bind(this), 100);
+				}
+				else {
+					$dispatchMessage(event.source, {action: "loaded", status: false});
+				}
+
+				break;
+
+			case "VPAIDEvent":
+				try {
+					message.data && typeof mediaPlayer[message.data.event] === "function" && mediaPlayer[message.data.event].apply(mediaPlayer, message.data.parameters || []);
+				} catch (e) {
+					console.log(e);
+				}
+
+				break;
+
+			case "load":
+		}
+	});
+})(window, document);

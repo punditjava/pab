@@ -1,0 +1,690 @@
+"use strict";
+
+$(function() {
+
+
+    startArticleJS( $('.endless__item'), 'first' );
+
+    window.endlessScroll = {
+        init : function(){
+            var _this = this;
+
+            _this.firstId = window.endlessScrollFirst;              // id первой статьи
+            _this.uploadUrl = window.endlessScrollUrl;              // урл откуда догружать
+            _this.autofillAlgorithm = window.endlessScrollAlgorithm;// алгоритм с помощью которого был составлен лист автозаполнния
+            _this.uploadQueue = window.endlessScrollQueue;          // массив / очередь статей для догрузки
+
+            _this.$endless = $( '#endless' );                       // основной элемент
+
+            if ( $( 'body' ).data( 'endless-off' ) == 1 ) {
+                console.log( "EndlessScroll id disabled in settings");
+                return false;
+            } else  if ( !_this.uploadUrl || !_this.uploadQueue.length > 0 || !_this.$endless.length > 0 ) {
+                console.log( "Can't start endlessScroll");
+                //console.log( "Can't start endlessScroll: UploadUrl = ",_this.uploadUrl," QueueLength = ",_this.uploadQueue," EndlessLength = ",_this.$endless);
+                return false;
+            }
+
+            if ( !window.EVENTSTACK ) window.EVENTSTACK = [];
+
+            // классы элементов
+            _this.class = {
+                endlessItem :           '.endless__item',           // класс блоков оберток статей
+                endlessItemContent :    '.endless__item-content',   // класс блоков для позиционирования контента статьи
+                endlessItemHide :       '.endless__item-hide',      // класс блоков затемнения
+                articleAhchor :         '.article__anchor',         // класс якорей для отслеживания прокрутки статьи
+                modFollow :             'm-follow',                 // класс модификатор что статья следующая (без точки!!!)
+                modActive :             'm-active',                 // класс модификатор активного элемента (без точки!!!)
+                modFollowFixed :        'm-follow-fixed'            // класс модификатор последующие элементы фиксированны (без точки!!!)
+            };
+
+            _this.metaAnalyticsRemove = [ 'title_ver', 'title_alg', 'rcmd_alg', 'rcmd_id' ];    // массив для идентификации мет под удаление при переходе между статьями
+
+            _this.uploadActive = 0;                                 // номер активного элемента для догрузки из массива
+            _this.uploadCount = _this.uploadQueue.length;           // общее кол-во элементов для догрузки
+            _this.upload = false;                                   // флаг что идет догрузка
+            _this.uploadErrorCount = 0;                             // счетчик ошибочных попыток загрузки статьи
+
+            // sets
+            _this.$items = false;                                   // набор активных элементов
+            _this.$activeItem = false;                              // активный элемент
+            _this.$followItems = false;                             // набор следующих за активным элементов
+            _this.$followItemsContent = false;                      // набор контентов следующих за активным элементов
+            _this.updateSets();
+
+            _this.urlParams = ( _this.$endless.data( 'scroll-params' ) && _this.$endless.data( 'scroll-params' ) != '' ) ? _this.$endless.data( 'scroll-params' ) : '';
+
+            // switching position
+            _this.switchTop = 0;
+            _this.updateSwitchTop();                                // вычисляем _this.switchTop
+
+            // viewport
+            _this.clientHeight = this.getClientHeigth();
+
+            // support IntersectionObserver
+            _this.supportObserver = !!window.IntersectionObserver ? true : false;
+
+            if ( _this.supportObserver ) {
+                _this.endlessObserver = new IntersectionObserver( function(){
+                    //console.log('------- observerCallback onScroll -------');
+                    _this.onScroll()},{ 'rootMargin': '-46px 0px 0px 0px'
+                });
+                $.each( $( _this.class.endlessItem, _this.$endless ), function( i, v ){ _this.endlessObserver.observe( v ); })
+            } else {
+                $( window ).scroll(function(){
+                    //console.log('------- onScroll -------');
+                    _this.onScroll();
+                });
+            }
+
+            $( window ).resize(function(){
+                _this.onResize();
+            });
+
+            $( window ).resize();
+
+            /* догрузка второй статьи при прокрутке более чем на 50px */
+            $( window ).bind( 'scroll.article_first_upload', function(){
+                if ( $( window ).scrollTop() > 50 ){
+                    _this.checkUploadItem();  // догружаем следующую статью
+                    $( window ).unbind( 'scroll.article_first_upload' );
+                }
+            });
+
+            /* подключение событий доскрола для аналитики */
+            _this.articleScrollEvents( this.$activeItem );
+
+            /* отправки ивентов аналитики при загрузке статьи */
+            _this.eventstack();
+
+        },
+
+        eventstack: function(){
+            var _this = this,
+                title_ver = $('meta[name = "analytics:title_ver"]').attr('content'),
+                title_alg = $('meta[name = "analytics:title_alg"]').attr('content'),
+                rcmd_alg = $('meta[name = "analytics:rcmd_alg"]').attr('content'),
+                rcmd_id = $('meta[name = "analytics:rcmd_id"]').attr('content');
+            if ( title_ver && title_alg ){
+                window.EVENTSTACK.push([ 'click', 'main_title_ver', {
+                    article_id: _this.firstId,
+                    hash: title_ver,
+                    algorithm: title_alg
+                }]);
+            }
+            if ( rcmd_alg ){
+                if ( rcmd_id ){
+                    window.EVENTSTACK.push([ 'click', 'article_rcmd_under_article', {
+                        article_id: _this.firstId,
+                        source_aid: rcmd_id,
+                        algorithm: rcmd_alg
+                    }]);
+                } else {
+                    window.EVENTSTACK.push([ 'click', 'main_rcmd_floor', {
+                        article_id: _this.firstId,
+                        algorithm: rcmd_alg
+                    }]);
+                }
+            }
+        },
+
+        onScroll: function(){
+            this.checkChangeItem();                                 // проверка смены элемента
+            this.updateSwitchTop();
+        },
+
+        onResize: function(){
+            this.clientHeight = this.getClientHeigth();
+            this.updateSwitchTop();
+        },
+
+        checkChangeItem : function(){
+
+            var _this = this,
+                activeTop = _this.$activeItem.offset().top - $( window ).scrollTop(),
+                activeBottom = activeTop + _this.$activeItem.outerHeight() ;
+
+            // console.log('>>>>>>> activeTop = '+activeTop+' - activeBottom = '+activeBottom+'>>> _this.switchTop = '+_this.switchTop+'>>> _this.$followItems.length = '+_this.$followItems.length);
+
+            /* переключение на следующую статью */
+            if ( activeBottom <= _this.switchTop && _this.$followItems.length ) {
+
+                $( _this.$followItems[0] ).removeClass( _this.class.modFollow )          // переводим в активный первый из follow
+                _this.changeItemEvents( true );
+
+                // console.log('>>>>>>> _this.$items.length = '+_this.$items.length+' _this.uploadActive = '+_this.uploadActive);
+
+                // догружаем слудующую статью если кол-во не follow больше чем индекс загружаемой
+                if ( _this.$items.length > _this.uploadActive ) _this.checkUploadItem();
+
+                // Работа с эвентами
+                var adFoxEventUrl = ( _this.$activeItem.data( 'event-url' ) && _this.$activeItem.data( 'event-url' ) != '' ) ? _this.$activeItem.data( 'event-url' ) : false;
+                // console.log( 'adFoxEventUrl = '+adFoxEventUrl);
+                // вставка ивента для adFox
+                if ( adFoxEventUrl !== false ){
+                    // console.log( '>>> counter >>> event-url ', adFoxEventUrl  );
+                    _this.$activeItem
+                        .removeAttr( 'data-event-url' )
+                        .data( 'event-url', '' )
+                        .find( '.article' )
+                        .append( '<img class="article__event-img" data-event="adFoxEvent" src="' + adFoxEventUrl + '" alt=""/>' );
+                }
+
+            }
+
+            /* переключение на предыдущую статью */
+            if ( activeTop > _this.switchTop && _this.$items.length > 1 ){
+                _this.$activeItem.addClass( _this.class.modFollow );                    // помечаем последний активный в follow
+                _this.changeItemEvents();
+                _this.updateArticleData( _this.$activeItem );
+            }
+
+        },
+
+        changeItemEvents: function( stepForward ){
+            var _this = this;
+
+            _this.updateSets();                                             // обновляем наборы
+            _this.changeProject( _this.$activeItem.data( 'project' ) );     // обновляем проект
+            _this.changeHeader( _this.$activeItem );                        // меняем header
+
+            // подменяем данные о статье на странице
+            history.replaceState( null, _this.$activeItem.data( 'title' ), location.origin + _this.$activeItem.data( 'url' ) + ( ( _this.urlParams && _this.urlParams != '' ) ? ( '?' + _this.urlParams ) : '' ) );
+
+            // отправляем аналитику, подменяем meta и т.п.
+            // второй параметр true проверка на отправку аналитики при первом переходе на следующий материал
+            _this.updateArticleData( _this.$activeItem, stepForward )
+
+        },
+
+        changeProject: function( project ){
+            var  $b = $( 'body' );
+            if ( project == 'ria') {
+                $b.removeClass( 'm-rsport m-realty m-radiosputnik' );
+                $b.addClass( 'm-ria' );
+            } else if ( project == 'rsport' ) {
+                $b.removeClass( 'm-ria m-realty m-radiosputnik' );
+                $b.addClass( 'm-rsport');
+            } else if ( project == 'realty' ) {
+                $b.removeClass( 'm-rsport m-ria m-radiosputnik' );
+                $b.addClass( 'm-realty' );
+            } else if ( project == 'radiosputnik' ) {
+                $b.removeClass( 'm-rsport m-ria m-realty' );
+                $b.addClass( 'm-radiosputnik' );
+            }
+        },
+
+        changeHeader: function( item ) {
+            $( 'body' ).removeClass( 'm-header-short m-header-share' );
+            if ( item.data( 'header-type' ) ) {
+                $( 'body' ).addClass( 'm-header-' + item.data( 'header-type' ) );
+                $( '.share.m-header' ).attr({
+                    'data-url': item.data('full-url'),
+                    'data-title': item.data('title'),
+                    'data-id': item.data('id')
+                });
+            }
+        },
+
+        updateArticleData: function( $item, stepForward ){
+
+            var _this = this;
+
+            document.title = $item.data('head-title');
+
+            $('meta[name="keywords"]').attr('content', $item.data('keywords'));
+
+            $('meta[property="article:published_time"]').attr('content', $item.data('published'));
+            $('meta[property="article:author"]').attr('content', $item.data('author'));
+
+            $('meta[name="analytics:title"]').attr('content', $item.data('title'));
+            $('meta[name="analytics:keyw"]').attr('content', $item.data('analytics-keyw'));
+            $('meta[name="analytics:rubric"]').attr('content', $item.data('analytics-rubric'));
+            $('meta[name="analytics:tags"]').attr('content', $item.data('analytics-tags'));
+            $('meta[name="analytics:site_domain"]').attr('content', $item.data('domain') );
+            $('meta[name="analytics:article_id"]').attr('content', $item.data('id'));
+            $('meta[name="analytics:url"]').attr('content', $item.data('full-url'));
+            $('meta[name="analytics:p_ts"]').attr('content', $item.data('pts'));
+            $('meta[name="analytics:author"]').attr('content', ( ($item.data('author')).trim() != '' ? $item.data('author') : $item.data('author-korr') ) );
+            $('meta[name="analytics:isscroll"]').attr('content', $item.data('is-scroll'));
+
+            /* удаляем мета аналитики т.к. они нужны только для первой статьи при первой загрузке страницы */
+            $.each( this.metaAnalyticsRemove, function( i, v ){
+                $('meta[name="analytics:'+v+'"]').remove();
+            });
+
+            if ( GLOBAL && GLOBAL.article ) {
+                GLOBAL.article.id = $item.data('id');
+                GLOBAL.article.show = !!$item.data('article-show');
+            }
+
+            window.dataLayer = window.dataLayer || [];
+            dataLayer.push(
+                {
+                    'event' : 'infinite_pageview',
+                    'page_title' : $item.data('title'),
+                    'page_path' : $item.data('url'),
+                    'page_domain' : $item.data('domain'),
+                    'page_url' : $item.data('full-url'),
+                    'page_tags' :  $item.data('analytics-tags'),
+                    'page_rubric' : $item.data('analytics-rubric'),
+                    'page_number' :  $item.data('endless'),
+                    'article_id'  :  $item.data('id'),
+                    'article_length' : $item.data('text-length')
+                }
+            );
+
+            if ( stepForward && !$item.data( 'event-once' ) ){
+
+                // Событие piwil_log
+                piwik_log( $item.data( 'head-title' ), 'ria', 'https://a.ria.ru/counter' );
+
+                // Событие: Прокрутка до каждой статьи в инфинити-скролл
+                window.EVENTSTACK.push([ 'scroll', 'article_infinity', {
+                    article_id: $item.data( 'id' ),
+                    source_aid: _this.firstId,
+                    algorithm: _this.autofillAlgorithm,
+                    textlength: $item.data( 'text-length' )
+                }]);
+
+                this.countersStepForwardOnce( $item );
+
+                // добавление флага
+                $item.attr( 'data-event-once', true )
+
+            }
+
+        },
+
+        checkUploadItem: function(){
+            /* догрузка при смене статьи на последню являющуюся последней */
+            if ( this.uploadActive < this.uploadCount && !this.upload ) {
+                this.upload = true;
+                this.uploadItem();
+            }
+        },
+
+        uploadItem : function(){
+            var _this = this;
+            if ( _this.uploadQueue[ _this.uploadActive ] == 'banner' ) {
+                //console.log('_this.uploadActive = '+(_this.uploadActive+1));
+                var chooseId = $( '.endless__choose-position-' + ( _this.uploadActive + 1 ) + ' div[ data-endless-id ]' ).data('endless-id');
+                //console.log('chooseId = '+chooseId);
+                if ( typeof chooseId == 'number' && chooseId > 0 && $.inArray( chooseId, _this.uploadQueue ) < 0 && chooseId != _this.firstId ){
+                    _this.uploadQueue[ _this.uploadActive ] = chooseId;
+                } else {
+                    _this.uploadQueue.splice( _this.uploadActive, 1 );
+                    _this.uploadCount = _this.uploadQueue.length;
+                    $( '.endless__choose div[ data-endless-id="' + chooseId + '"]' ).remove();
+                }
+                _this.upload = false;
+                _this.checkUploadItem();
+            } else {
+                /* проверка что элемент массива число иначе переходим к следующему элементу */
+                if ( isNaN( Number( this.uploadQueue[ this.uploadActive ] ) ) ){
+                    this.uploadActive++;
+                    this.checkUploadItem();
+                }
+                $.ajax({
+                    url: _this.uploadUrl + _this.uploadQueue[ _this.uploadActive ] + '.html?endless=' + ( _this.uploadActive + 2 ) + ( ( _this.urlParams && _this.urlParams != '' ) ? ( '&' + _this.urlParams ) : '' ),
+                    dataType: 'html',
+                    type: 'GET',
+                    success: function ( data ) {
+
+                        <!--TODO убрать после октября 21 года -->
+                        if ( window.Ya && window.Ya.headerBidding && window.Ya.headerBidding.pushAdUnits && typeof window.Ya.headerBidding.pushAdUnits == 'function' ) {
+                            window.headerBiddingPushAdUnits = function ( param ) {
+                                window.Ya.headerBidding.pushAdUnits( param );
+                            }
+                        }
+                        <!--TODO убрать после октября 21 года -->
+
+                        var $endlessItem = $( data ),
+                            eventUrl = $( '.endless__choose div[ data-endless-id="'+_this.uploadQueue[_this.uploadActive]+'" ]' ).data( 'event-url' );
+                        if ( eventUrl ) $endlessItem.attr( 'data-event-url', eventUrl );
+                        $endlessItem.attr( 'data-endless', ( _this.uploadActive + 2 ) ); // подменяем атрибут из кеша на корректный
+                        _this.$endless.append( $endlessItem );                          // добавляем элемент
+                        _this.uploadActive++;                                           // увеличиваем счетчик элементов для догрузки
+                        _this.updateSets();                                             // обновляем наборы
+                        startArticleJS( $endlessItem.filter( _this.class.endlessItem )  ); // фильр нужен что бы переданный тег <script> не обрабатывался в наборе
+                        _this.upload = false;                                           // меняем флаг
+                        _this.uploadErrorCount = 0;                                     // обнуляем счетчик ошибочных загрузок
+                        //console.log('<<<<<<<<<<< ARTICLE LOADED >>>>>>>>>> next => '+_this.uploadActive+', '+_this.uploadQueue[ _this.uploadActive ]);
+                        /* подключение событий доскрола для аналитики */
+                        _this.articleScrollEvents( $endlessItem );
+                        /* добавляем отслеживание в observer */
+                        if ( _this.supportObserver ) {
+                            $.each( $endlessItem, function( i, v ){ _this.endlessObserver.observe( v ); })
+                        }
+
+                    },
+                    error: function () {
+                        if (_this.uploadErrorCount < 5) {
+                            _this.uploadErrorCount++;
+                            setTimeout(function () {
+                                _this.uploadItem();
+                            }, 2000);
+                        }
+                    }
+                    /* TODO Доделать - действия при ошибке */
+                });
+            }
+        },
+
+        // Обновление верхнего края для переключения (не работает с обсервером)
+        updateSwitchTop : function(){
+            this.switchTop = $( body ).hasClass( 'm-header-sticked' ) ? $( '#headerSticked' ).height() : 0;
+        },
+
+        // Аналитика вызов счетчиков
+        countersStepForwardOnce : function( $item ){
+
+            let project = $item.data( 'project' ),
+                author = $item.data( 'author' ) || '',
+                tags = $item.data( 'analytics-tags' ),
+                referrer = document.referrer,
+                rubric = $item.data( 'analytics-rubric' ),
+                title = $item.data( 'head-title' ),
+                path = $item.data( 'url' ),
+                domain = $item.data( 'domain' );
+
+            let ymPageUrl = domain + path;
+            let ymData = { 'title': title, 'referer': referrer };
+
+            //console.log( ' === countersStepForwardOnce === ymPageUrl = ',ymPageUrl,' ymData = ',ymData)
+
+            // Яндекс метрика (Коммерция ):
+            let yaCounter960630 = new Ya.Metrika({id: 960630});
+            yaCounter960630.hit( ymPageUrl, ymData );
+            // Яндекс метрика (коммерция):
+            let yaCounter48341570 = new Ya.Metrika({id: 48341570});
+            yaCounter48341570.hit( ymPageUrl, ymData );
+            if ( project == 'rsport' ){
+                // Яндекс метрика (rsport):
+                let yaCounter10672129 = new Ya.Metrika({id: 10672129});
+                yaCounter10672129.hit( ymPageUrl, ymData );
+            }
+            if ( project == 'realty' ){
+                // Яндекс метрика (realty):
+                let yaCounter957495 = new Ya.Metrika({id: 957495});
+                yaCounter957495.hit( ymPageUrl, ymData );
+            }
+            let gtagMain = { 'page_path' : path, 'page_title' : title, 'dimension1' : author, 'dimension3' : tags, 'dimension12': referrer, 'dimension21' : rubric };
+            let gtagSeo = { 'page_path' : path, 'page_title' : title, 'dimension1' : author, 'dimension3' : tags, 'dimension11': rubric, 'dimension12' : referrer };
+            let gtagRsport = { 'page_path' : path, 'page_title' : title, 'dimension1' : author, 'dimension4': referrer, 'dimension5' : tags };
+            let gtagRealty = { 'page_path' : path, 'page_title' : title, 'dimension3' : tags, 'dimension12': referrer, 'dimension13' : author  };
+            let gtagTok = { 'page_path' : path, 'page_title' : title };
+            let gtagRadiosputnik = { 'page_path' : path, 'page_title' : title, 'dimension1' : author, 'dimension2': tags, 'dimension3' : referrer, 'dimension4' : rubric  };
+            let gtagOther = { 'page_path' : path, 'page_title' : title, 'dimension1' : author, 'dimension3': tags, 'dimension6' : referrer };
+
+            //console.log ( ' === countersStepForwardOnce === gtagMain = ',gtagMain);
+            //console.log ( ' === countersStepForwardOnce === gtagSeo = ',gtagSeo);
+            //console.log ( ' === countersStepForwardOnce === gtagRsport = ',gtagRsport);
+            //console.log ( ' === countersStepForwardOnce === gtagRealty = ',gtagRealty);
+            //console.log ( ' === countersStepForwardOnce === gtagTok = ',gtagTok);
+            //console.log ( ' === countersStepForwardOnce === gtagRadiosputnik = ',gtagRadiosputnik);
+            //console.log ( ' === countersStepForwardOnce === gtagOther = ',gtagOther);
+
+            // Google (общий):
+            gtag('config', 'UA-29579933-1', gtagMain );
+            // Google (seo):
+            gtag('config', 'UA-29579933-96', gtagSeo );
+            // Google (rsport):
+            if ( project == 'rsport' ) { gtag('config', 'UA-26774957-1', gtagRsport ); }
+            // Google (realty):
+            if ( project == 'realty' ) { gtag('config', 'UA-22992350-1', gtagRealty ); }
+            // Google (tok):
+            if ( $item.data( 'analytics-rubric' ) == 'ТОК' ) { gtag('config', 'UA-29579933-87', gtagTok ); }
+            // Google (radiosputnik):
+            if ( project == 'radiosputnik' ) { gtag('config', 'UA-29579933-94', gtagRadiosputnik ); }
+            // Google (mama, sn, na):
+            if ( project == 'mama' || project == 'sn' || project == 'na') { gtag('config', 'UA-29579933-76', gtagOther ); }
+
+        },
+
+        articleScrollEvents : function( $endlessItem ) {
+            var _this = this;
+            /* событие доскролла тела статьи */
+            _this.articlePercentEvents( $endlessItem );
+            /* событие доскрола до конца тела статьи */
+            _this.eventScrollArticleEnd( $endlessItem );
+        },
+
+        // Аналитика событие доскролла тела статьи
+        articlePercentEvents: function( $endlessItem ){
+            var _this = this;
+            if ( _this.supportObserver ) {
+                var endlessObserverPercent = new IntersectionObserver(
+                    function( obj){
+                        $.each( $( obj ), function ( i, v ){
+                            if ( v.isIntersecting == true ){
+                                var $obj = $( v.target );
+                                //console.log ( 'WORK ', $obj.data(), $obj );
+                                if ( !$obj.data('event-once') ){
+                                    $obj.attr('data-event-once', 'true');
+                                    //console.log('WORK --- doscroll_percent = ', $obj.data('percent') ,' article_id = ', $obj.data('id'))
+                                    window.EVENTSTACK.push(['scroll', 'author_doscroll', {
+                                        doscroll_percent: $obj.data('percent'),
+                                        article_id: $obj.data('id')
+                                    }]);
+                                }
+                            }
+                        })
+                    }
+                );
+                $.each( $( _this.class.articleAhchor, $endlessItem ), function( i, v ){
+                    endlessObserverPercent.observe( v );
+                })
+            }
+        },
+
+        // Аналитика событие доскрола до конца тела статьи
+        eventScrollArticleEnd : function( $endlessItem ) {
+            var _this = this,
+                articleId = $endlessItem.data( 'id' ),
+                articleTextLength = $endlessItem.data( 'text-length' );
+            if ( $( '.article__body', $endlessItem ).length > 0 ) {
+                $( window ).bind( 'scroll.article_end_' + articleId, function () {
+                    var $articleBody = $( '.article__body', $endlessItem ),
+                        articleBodyBottom = $articleBody.offset().top + $articleBody.height() - _this.getClientHeigth() + 100; // 100 пикселей добавка чтобы тело статьи выехало из под ленты новостей
+                    if ( $( window ).scrollTop() > articleBodyBottom ) {
+                        //console.log( ' ----- id = '+ articleId + ' - length = ' + articleTextLength ) ;
+                        window.EVENTSTACK.push([ 'scroll', 'article_end', {
+                            article_id: articleId,
+                            textlength: articleTextLength
+                        }]);
+                        $( window ).unbind( 'scroll.article_end_' + articleId );
+                    }
+                });
+            }
+        },
+
+        updateSets : function() {
+            this.$items = $( this.class.endlessItem + ':not(.' + this.class.modFollow + ')', this.$endless );   // набор не follow элементов
+            this.$followItems = $( this.class.endlessItem + '.' + this.class.modFollow, this.$endless );        // набор follow элементов
+            this.$activeItem = $( this.$items[ this.$items.length - 1 ] );                                      // последний / активный не follow элемент
+            this.$followItemsContent = $( this.class.endlessItemContent, this.$followItems );                   // набор контентов follow элементов
+            // выставляем класс на активный
+            this.$followItems.removeClass( this.class.modActive );
+            this.$items.removeClass( this.class.modActive );
+            this.$activeItem.addClass( this.class.modActive );
+        },
+
+        getClientHeigth : function(){
+            return  Math.max( window.innerHeight || 0, ( document.getElementsByTagName( 'html' )[ 0 ] || {} ).clientHeight || 0 )
+        }
+
+    };
+
+    endlessScroll.init();
+
+});
+
+// Лайк статьи
+$( function() {
+
+    var emoji_loading = false;
+
+    $( 'body' ).on( 'click', '.js-article-like', function( e ) {
+        e.preventDefault();
+        var btn = $( this );
+        $.ajax({
+            url: '/services/article/like/',
+            data: {
+                article_id: btn.data( 'id' )
+            },
+            dataType: 'json'
+        }).done( function( response ) {
+            if ( response.status === 'success' ) {
+                btn.find( 'span' ).text( response.likes );
+            }
+        })
+    });
+
+    // Лайк в статье
+    $( 'body' ).on( 'click', '.article__userbar-emoji .emoji-item', function( e ) {
+        e.preventDefault();
+        var that = $( this );
+        if ( emoji_loading ) {
+            return;
+        }
+        $.ajax({
+            url: '/services/article/add_emoji/',
+            data: {
+                article_id: GLOBAL.article.id,
+                emotion: that.data('type')
+            },
+            dataType: 'json',
+            beforeSend: function() {
+                emoji_loading = true;
+            }
+        }).done(function(response) {
+            if (response.status === 'success') {
+                var items = that.closest('.emoji').find('.emoji-item');
+                items.filter('.m-type-s1').find('.m-value').text(response.s1);
+                items.filter('.m-type-s2').find('.m-value').text(response.s2);
+                items.filter('.m-type-s3').find('.m-value').text(response.s3);
+                items.filter('.m-type-s4').find('.m-value').text(response.s4);
+                items.filter('.m-type-s5').find('.m-value').text(response.s5);
+                items.filter('.m-type-s6').find('.m-value').text(response.s6);
+
+                items.each(function() {
+                    var item = $(this);
+
+                    if (item.find('.m-value').text() === '0') {
+                        item.removeClass('m-active');
+                    } else {
+                        item.addClass('m-active');
+                    }
+                })
+            }
+        }).always(function() {
+            emoji_loading = false;
+        })
+    })
+
+    // Открыть попап с эмодзи
+    $('body').on('click', '.best-comments__item-like', function(e) {
+        e.stopPropagation();
+
+        var target = $(this),
+            popover,
+            is_desc = $(document).width() > 768,
+            container = target.closest('.best-comments__item');
+
+        // Закрыть другие
+        $('.best__popper-emoji').remove();
+
+        popover = container.find('.emoji-popper').clone(true);
+        popover.addClass('best__popper-emoji');
+
+        $('body').append(popover);
+
+        // Позиционирование
+        new Popper(target, popover, {
+            placement: is_desc ? 'bottom' : 'left',
+            modifiers: {
+                preventOverflow: {
+                    enabled: true,
+                    padding: 0,
+                    boundariesElement: is_desc ? target.closest('.best-comments__item') : 'window'
+                },
+            }
+        });
+
+        popover.fadeToggle();
+
+        // Клик на любое место закрывает попап
+        $('body').one('click.best__popper-emoji', function() {
+            $('.best__popper-emoji').remove();
+        })
+    });
+
+    // Статтеги
+    $('.stattags__content-list').each(function() {
+        var item = $(this);
+
+        item.theinCarousel({
+            nav: true,
+            navText : ['<i>'+ria.getIcon('icon-left_single')+'</i>','<i>'+ria.getIcon('icon-right_single')+'</i>'],
+            itemWidth: 239,
+            between: 10,
+            stretch: false,
+            outside: 0,
+            responsive: {
+                480: {
+                    outside: 0,
+                }
+            }
+        });
+    });
+
+    // Статтеги / табы
+    $('.stattags').on('click', '.stattags__tab', function(e) {
+        e.preventDefault();
+        var tab = $(this);
+        tab.addClass('m-active').siblings('.stattags__tab').removeClass('m-active');
+        $(tab.data('for')).addClass('m-active').siblings('.stattags__content').removeClass('m-active');
+    })
+
+    var aggrVis  = true;
+    var aggrPush = function( el ){
+        var $elem         = $('.endless__item.m-active').find('.article__aggr[data-visiblepush="no"]');
+
+        if ( $elem.length ) {
+            var elementTop    = $elem.offset().top;
+            var elementBottom = elementTop + $elem.outerHeight();
+
+            var viewportTop = $(window).scrollTop();
+            var viewportBottom = viewportTop + $(window).height() - 105;
+
+            aggrVis = true;
+        }
+
+        if ( (elementBottom > viewportTop) && (elementTop < viewportBottom) && aggrVis ) {
+            aggrVis = false;
+            // ставим кнопкам метку, что их видимость запушена
+            $elem.attr({ 'data-visiblepush' : 'yes' });
+            window.dataLayer = window.dataLayer || [];
+            dataLayer.push({
+                'event'      : 'dl_block_visibility',
+                'block_name' : 'Читать в риа',
+                'page_path'  : window.location.pathname
+            });
+        }
+    };
+
+    if ( $('.endless__item.m-active').find('.article__aggr[data-visiblepush="no"]').length ) {
+        $(window).on('DOMContentLoaded load resize scroll', aggrPush );
+    }
+
+    var $aggrbtn = $('.article__aggr-item');
+    $aggrbtn.on('click', function(e){
+        window.dataLayer = window.dataLayer || [];
+        dataLayer.push({
+            'event'      : 'dl_block_click',
+            'block_name' : 'Читать в риа',
+            'page_path'  : window.location.pathname
+        });
+    });
+});
